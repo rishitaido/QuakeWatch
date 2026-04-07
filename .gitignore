@@ -14,3 +14,5 @@ Thumbs.db
 
 # Docker
 *.log
+
+context.md
