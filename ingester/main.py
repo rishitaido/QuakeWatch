@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import time
-from decimal import Decimal
 
 import boto3
 import requests
@@ -39,6 +38,8 @@ logger = logging.getLogger("ingester")
 sqs = boto3.client("sqs", region_name=AWS_REGION)
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 table = dynamodb.Table(EARTHQUAKES_TABLE)
+recently_published: dict[str, float] = {}
+RECENT_EVENT_TTL_SECONDS = int(os.environ.get("INGEST_DEDUPE_TTL_SECONDS", "900"))
 
 
 def fetch_feed() -> list[dict]:
@@ -57,6 +58,11 @@ def already_seen(event_id: str) -> bool:
     Check DynamoDB to see if this event_id has already been processed.
     Using a lightweight get_item (partition key only) to keep reads cheap.
     """
+    now = time.time()
+    published_at = recently_published.get(event_id)
+    if published_at and now - published_at < RECENT_EVENT_TTL_SECONDS:
+        return True
+
     try:
         response = table.get_item(
             Key={"event_id": event_id},
@@ -69,7 +75,7 @@ def already_seen(event_id: str) -> bool:
         return False
 
 
-def publish_to_sqs(event_id: str, payload: dict) -> None:
+def publish_to_sqs(event_id: str, payload: dict) -> bool:
     """Publish a single earthquake event to SQS as a JSON message."""
     try:
         sqs.send_message(
@@ -81,8 +87,22 @@ def publish_to_sqs(event_id: str, payload: dict) -> None:
             f"Published  event_id={event_id}  mag={payload.get('magnitude')}  "
             f"place={payload.get('place')!r}"
         )
+        return True
     except ClientError as exc:
         logger.error(f"SQS send_message failed for {event_id}: {exc}")
+        return False
+
+
+def prune_recent_cache() -> None:
+    """Drop stale IDs from the short-term dedupe cache."""
+    now = time.time()
+    stale_ids = [
+        event_id
+        for event_id, published_at in recently_published.items()
+        if now - published_at >= RECENT_EVENT_TTL_SECONDS
+    ]
+    for event_id in stale_ids:
+        recently_published.pop(event_id, None)
 
 
 def parse_feature(feature: dict) -> dict | None:
@@ -122,6 +142,7 @@ def poll_once() -> int:
     if not features:
         return 0
 
+    prune_recent_cache()
     new_count = 0
     for feature in features:
         payload = parse_feature(feature)
@@ -132,8 +153,9 @@ def poll_once() -> int:
         if already_seen(event_id):
             continue
 
-        publish_to_sqs(event_id, payload)
-        new_count += 1
+        if publish_to_sqs(event_id, payload):
+            recently_published[event_id] = time.time()
+            new_count += 1
 
     return new_count
 

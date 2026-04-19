@@ -17,6 +17,7 @@ let lastUpdateTime = Date.now();
 let lastBannerEventId = null;
 let bannerDismissed = false;
 let knownEventIds = new Set();
+let alertLogCollapsed = false;
 
 // ── Severity Colors ────────────────────────────────────────
 const SEVERITY_COLORS = {
@@ -58,6 +59,9 @@ function initMap() {
 
     // Layer group for earthquake markers
     markersLayer = L.layerGroup().addTo(map);
+
+    // Re-measure container after flex layout settles so tiles and markers stay aligned
+    setTimeout(() => map.invalidateSize(), 0);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -138,13 +142,13 @@ function getMarkerRadius(magnitude) {
  * Build HTML popup content for an earthquake marker.
  */
 function buildPopupContent(quake) {
-    const severity = quake.severity || "low";
+    const severity = String(quake.severity || "low").toLowerCase();
     const timeAgo = getTimeAgo(quake.timestamp);
-    const mag = (quake.magnitude || 0).toFixed(1);
-    const depth = (quake.depth || 0).toFixed(1);
-    const impact = (quake.impact_score || 0).toFixed(1);
+    const mag = Number(quake.magnitude || 0).toFixed(1);
+    const depth = Number(quake.depth ?? quake.depth_km ?? 0).toFixed(1);
+    const impact = Number(quake.impact_score || 0).toFixed(1);
     const nearestCity = quake.nearest_city || "Unknown";
-    const cityDist = (quake.nearest_city_dist_km || 0).toFixed(0);
+    const cityDist = Number(quake.nearest_city_dist_km || 0).toFixed(0);
 
     return `
         <div class="popup-title">${quake.place || "Unknown Location"}</div>
@@ -185,9 +189,9 @@ function updateMarkers(earthquakes) {
     const newEventIds = new Set();
 
     earthquakes.forEach((quake) => {
-        if (!quake.lat || !quake.lon) return;
+        if (quake.lat == null || quake.lon == null) return;
 
-        const severity = quake.severity || "low";
+        const severity = String(quake.severity || "low").toLowerCase();
         const isNew = !knownEventIds.has(quake.event_id);
         newEventIds.add(quake.event_id);
 
@@ -217,6 +221,24 @@ function updateMarkers(earthquakes) {
 // ══════════════════════════════════════════════════════════
 
 /**
+ * Keep the map/sidebar layout below the fixed alert banner.
+ */
+function syncBannerOffset() {
+    const banner = document.getElementById("alert-banner");
+    const isVisible = !banner.classList.contains("hidden");
+
+    if (!isVisible) {
+        document.documentElement.style.setProperty("--banner-offset", "0px");
+        if (map) setTimeout(() => map.invalidateSize(), 0);
+        return;
+    }
+
+    const height = Math.ceil(banner.getBoundingClientRect().height);
+    document.documentElement.style.setProperty("--banner-offset", `${height}px`);
+    if (map) setTimeout(() => map.invalidateSize(), 0);
+}
+
+/**
  * Show or update the alert banner based on the most recent high/medium alert.
  */
 function updateAlertBanner(alerts) {
@@ -227,6 +249,7 @@ function updateAlertBanner(alerts) {
         if (!bannerDismissed) {
             banner.classList.add("hidden");
             banner.classList.remove("high", "medium");
+            syncBannerOffset();
         }
         return;
     }
@@ -245,13 +268,14 @@ function updateAlertBanner(alerts) {
         lastBannerEventId = latest.event_id;
     }
 
-    const severity = latest.severity || "medium";
+    const severity = (latest.severity || "medium").toLowerCase();
     const mag = parseFloat(latest.magnitude || 0).toFixed(1);
     const impact = parseFloat(latest.impact_score || 0).toFixed(0);
 
     banner.classList.remove("hidden", "high", "medium");
     banner.classList.add(severity);
     bannerText.textContent = `${severity.toUpperCase()} ALERT: M${mag} earthquake near ${latest.place || "Unknown"} | Impact Score: ${impact}/100 | ${latest.nearest_city || ""}`;
+    syncBannerOffset();
 }
 
 /**
@@ -261,6 +285,7 @@ function dismissBanner() {
     const banner = document.getElementById("alert-banner");
     banner.classList.add("hidden");
     bannerDismissed = true;
+    syncBannerOffset();
 }
 
 // Make dismissBanner available globally for the onclick handler
@@ -270,8 +295,77 @@ window.dismissBanner = dismissBanner;
 // ALERT LOG
 // ══════════════════════════════════════════════════════════
 
+function setAlertLogCollapsed(collapsed) {
+    const section = document.getElementById("alert-log-section");
+    const toggle = document.getElementById("alert-log-toggle");
+    if (!section || !toggle) return;
+
+    alertLogCollapsed = collapsed;
+    section.classList.toggle("collapsed", collapsed);
+    toggle.textContent = collapsed ? "Open Alerts" : "Collapse";
+    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (map) {
+        setTimeout(() => map.invalidateSize(), 0);
+    }
+}
+
+function ensureAlertLogToggleControl() {
+    const section = document.getElementById("alert-log-section");
+    if (!section) return null;
+
+    let toggle = document.getElementById("alert-log-toggle");
+    if (toggle) return toggle;
+
+    const log = document.getElementById("alert-log");
+    let title = section.querySelector(".section-title");
+    let row = section.querySelector(".section-title-row");
+
+    if (!title) {
+        title = document.createElement("h3");
+        title.className = "section-title";
+        title.textContent = "Alert Log";
+    }
+
+    if (!row) {
+        row = document.createElement("div");
+        row.className = "section-title-row";
+        section.insertBefore(row, log || section.firstChild);
+    }
+
+    if (title.parentElement !== row) {
+        row.prepend(title);
+    }
+
+    toggle = document.createElement("button");
+    toggle.id = "alert-log-toggle";
+    toggle.className = "section-toggle-btn";
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.setAttribute("aria-controls", "alert-log");
+    toggle.textContent = "Collapse";
+    row.appendChild(toggle);
+
+    return toggle;
+}
+
+function initAlertLogToggle() {
+    const toggle = ensureAlertLogToggleControl();
+    if (!toggle) return;
+
+    const saved = window.localStorage.getItem("quakewatch.alert_log_collapsed");
+    setAlertLogCollapsed(saved === "true");
+
+    toggle.addEventListener("click", () => {
+        setAlertLogCollapsed(!alertLogCollapsed);
+        window.localStorage.setItem(
+            "quakewatch.alert_log_collapsed",
+            String(alertLogCollapsed)
+        );
+    });
+}
+
 /**
- * Update the sidebar alert log with recent alerts.
+ * Update the right-side alert log with recent alerts.
  */
 function updateAlertLog(alerts) {
     const log = document.getElementById("alert-log");
@@ -284,7 +378,7 @@ function updateAlertLog(alerts) {
     log.innerHTML = alerts
         .slice(0, 20)
         .map((alert) => {
-            const severity = alert.severity || "medium";
+            const severity = (alert.severity || "medium").toLowerCase();
             const mag = parseFloat(alert.magnitude || 0).toFixed(1);
             const impact = parseFloat(alert.impact_score || 0).toFixed(0);
             const timeAgo = getTimeAgo(alert.timestamp || alert.created_at);
@@ -316,13 +410,13 @@ function updateStats(stats) {
     if (!stats) return;
 
     document.getElementById("stat-total").textContent =
-        stats.total_events_24h || 0;
+        stats.total_events_24h ?? 0;
     document.getElementById("stat-max-mag").textContent =
-        (stats.highest_magnitude || 0).toFixed(1);
+        stats.highest_magnitude != null ? parseFloat(stats.highest_magnitude).toFixed(1) : "--";
     document.getElementById("stat-max-impact").textContent =
-        (stats.highest_impact || 0).toFixed(0);
+        stats.highest_impact != null ? parseFloat(stats.highest_impact).toFixed(0) : "--";
     document.getElementById("stat-alerts").textContent =
-        stats.total_alerts_24h || 0;
+        stats.total_alerts_24h ?? 0;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -447,15 +541,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Initialize filter listeners
     initFilters();
+    initAlertLogToggle();
 
     // First data load
     refreshData();
+    syncBannerOffset();
 
     // Start polling loop
     setInterval(refreshData, POLL_INTERVAL_MS);
 
     // Check for stale data every 30 seconds
     setInterval(checkStaleData, 30000);
+    window.addEventListener("resize", syncBannerOffset);
 
     console.log("QuakeWatch Dashboard ready!");
 });

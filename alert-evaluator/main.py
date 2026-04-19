@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
 # ── Configuration ──────────────────────────────────────────
@@ -70,29 +71,24 @@ def scan_for_new_events() -> list[dict]:
     Only returns high and medium severity events (low severity doesn't get alerts).
     """
     try:
+        filter_expr = Attr("severity").is_in(["high", "medium", "HIGH", "MEDIUM"])
         response = earthquakes_table.scan(
-            FilterExpression="severity IN (:high, :medium)",
-            ExpressionAttributeValues={
-                ":high": "high",
-                ":medium": "medium",
-            },
+            FilterExpression=filter_expr,
         )
         items = response.get("Items", [])
 
         while "LastEvaluatedKey" in response:
             response = earthquakes_table.scan(
-                FilterExpression="severity IN (:high, :medium)",
-                ExpressionAttributeValues={
-                    ":high": "high",
-                    ":medium": "medium",
-                },
+                FilterExpression=filter_expr,
                 ExclusiveStartKey=response["LastEvaluatedKey"],
             )
             items.extend(response.get("Items", []))
 
         # Filter out already-evaluated events
         new_events = [
-            item for item in items if item["event_id"] not in evaluated_event_ids
+            item
+            for item in items
+            if item.get("event_id") and item["event_id"] not in evaluated_event_ids
         ]
 
         return new_events
@@ -108,15 +104,16 @@ def create_alert(event: dict):
     """
     try:
         alert_id = str(uuid.uuid4())[:8]
-        severity = event.get("severity", "medium")
+        severity = str(event.get("severity", "medium")).lower()
+        magnitude = event.get("magnitude", Decimal("0"))
 
         alert = {
             "alert_id": alert_id,
             "event_id": event["event_id"],
             "severity": severity,
             "timestamp": int(event.get("timestamp", 0)),
-            "description": f"M{event.get('magnitude')} earthquake near {event.get('place')}",
-            "magnitude": event.get("magnitude", Decimal("0")),
+            "description": f"M{magnitude} earthquake near {event.get('place')}",
+            "magnitude": magnitude,
             "impact_score": event.get("impact_score", Decimal("0")),
             "place": event.get("place", "Unknown"),
             "nearest_city": event.get("nearest_city", "Unknown"),

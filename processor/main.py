@@ -28,8 +28,12 @@ HIGH_SEVERITY_IMPACT = float(os.environ.get("HIGH_SEVERITY_IMPACT", "80"))
 MEDIUM_SEVERITY_MAG = float(os.environ.get("MEDIUM_SEVERITY_MAG", "4.5"))
 MEDIUM_SEVERITY_IMPACT = float(os.environ.get("MEDIUM_SEVERITY_IMPACT", "40"))
 
-IMPACT_RADIUS_KM = 300  # Only consider cities within this radius
-IMPACT_LOG_SCALE = 15   # Tuning factor for 0-100 normalization
+IMPACT_RADIUS_KM = float(os.environ.get("IMPACT_RADIUS_KM", "300"))
+IMPACT_MAGNITUDE_EXPONENT = 2.0
+IMPACT_POPULATION_DIVISOR = 700.0
+IMPACT_DISTANCE_EXPONENT = 1.4
+IMPACT_DISTANCE_FLOOR = 25.0
+IMPACT_LOG_SCALE = 25.0
 
 # ── Logging ────────────────────────────────────────────────
 logging.basicConfig(
@@ -121,8 +125,10 @@ def calculate_impact_score(magnitude: float, lat: float, lon: float) -> dict:
     Calculate composite impact score for an earthquake by correlating
     its epicenter with nearby population centers.
 
-    Formula per city: city_impact = (mag^2) * (population/1000) / (distance_km^2 + 1)
-    Overall score: normalized sum on a 0-100 logarithmic scale.
+    Formula per city:
+      city_impact = (mag^2) * (population/700) / (distance_km^1.4 + 25)
+    Overall score:
+      impact = min(100, 25 * log10(1 + sum(city_impact)))
 
     Returns dict with: impact_score, nearest_city, nearest_city_dist_km, nearby_cities_count
     """
@@ -150,7 +156,11 @@ def calculate_impact_score(magnitude: float, lat: float, lon: float) -> dict:
         # Only count cities within impact radius for scoring
         if dist <= IMPACT_RADIUS_KM:
             nearby_count += 1
-            city_impact = (magnitude ** 2) * (city["population"] / 1000) / (dist ** 2 + 1)
+            city_impact = (
+                (magnitude ** IMPACT_MAGNITUDE_EXPONENT)
+                * (city["population"] / IMPACT_POPULATION_DIVISOR)
+                / (dist ** IMPACT_DISTANCE_EXPONENT + IMPACT_DISTANCE_FLOOR)
+            )
             raw_impact_sum += city_impact
 
     # Normalize to 0-100 using logarithmic scale
@@ -186,11 +196,14 @@ def write_enriched_event(earthquake: dict, impact: dict, severity: str):
     Uses Decimal for DynamoDB number compatibility.
     """
     try:
+        depth_value = earthquake.get("depth_km", earthquake.get("depth", 0))
+        timestamp = earthquake.get("time", earthquake.get("timestamp", 0))
+
         item = {
             "event_id": earthquake["event_id"],
-            "timestamp": int(earthquake["time"]),
+            "timestamp": int(timestamp or 0),
             "magnitude": Decimal(str(earthquake.get("magnitude", 0))),
-            "depth": Decimal(str(earthquake.get("depth", 0))),
+            "depth": Decimal(str(depth_value or 0)),
             "lat": Decimal(str(earthquake.get("lat", 0))),
             "lon": Decimal(str(earthquake.get("lon", 0))),
             "place": earthquake.get("place", "Unknown"),
@@ -208,8 +221,8 @@ def write_enriched_event(earthquake: dict, impact: dict, severity: str):
         earthquakes_table.put_item(Item=item)
         return True
 
-    except ClientError as e:
-        logger.error(f"Failed to write event {earthquake['event_id']}: {e}")
+    except (ClientError, ValueError, TypeError, ArithmeticError) as e:
+        logger.error(f"Failed to write event {earthquake.get('event_id', 'unknown')}: {e}")
         return False
 
 
@@ -218,9 +231,16 @@ def process_message(message: dict):
     Process a single SQS message: parse, enrich with impact score, write to DynamoDB.
     """
     try:
+        if "Body" not in message or "ReceiptHandle" not in message:
+            logger.error(f"Skipping malformed SQS envelope: keys={list(message.keys())}")
+            return
+
         body = json.loads(message["Body"])
+        if not isinstance(body, dict):
+            raise ValueError("message body must be a JSON object")
+
         event_id = body.get("event_id", "unknown")
-        magnitude = float(body.get("magnitude", 0))
+        magnitude = float(body.get("magnitude") or 0)
         lat = float(body.get("lat", 0))
         lon = float(body.get("lon", 0))
 
@@ -252,6 +272,8 @@ def process_message(message: dict):
             QueueUrl=SQS_QUEUE_URL,
             ReceiptHandle=message["ReceiptHandle"],
         )
+    except Exception as e:
+        logger.exception(f"Unexpected processing error, message will retry: {e}")
 
 
 def poll_sqs():
@@ -285,6 +307,14 @@ def main():
     logger.info("QuakeWatch Impact Processor starting")
     logger.info(f"SQS Queue: {SQS_QUEUE_URL}")
     logger.info(f"Impact radius: {IMPACT_RADIUS_KM} km")
+    logger.info(
+        "Impact formula: city=(mag^%.1f)*(pop/%.0f)/(dist^%.1f+%.0f), score=min(100, %.1f*log10(1+sum))",
+        IMPACT_MAGNITUDE_EXPONENT,
+        IMPACT_POPULATION_DIVISOR,
+        IMPACT_DISTANCE_EXPONENT,
+        IMPACT_DISTANCE_FLOOR,
+        IMPACT_LOG_SCALE,
+    )
     logger.info("=" * 60)
 
     # Load cities into memory cache

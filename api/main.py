@@ -14,6 +14,7 @@ Owner: Rishi
 
 import logging
 import os
+import time as time_module
 from decimal import Decimal
 from typing import Optional
 
@@ -75,6 +76,11 @@ def decimal_to_float(obj):
     return obj
 
 
+def normalize_severity(value: Optional[str]) -> str:
+    """Normalize severity labels to lower-case canonical values."""
+    return str(value or "").strip().lower()
+
+
 def scan_table(table, filter_expression=None) -> list[dict]:
     """
     Perform a full DynamoDB table scan with automatic pagination.
@@ -110,33 +116,55 @@ def health():
 
 @app.get("/earthquakes", tags=["Earthquakes"])
 def get_earthquakes(
+    hours: Optional[int] = Query(
+        default=None,
+        description="Only return earthquakes within the last N hours",
+        ge=1,
+        le=720,
+    ),
     min_mag: Optional[float] = Query(
         default=None,
         description="Minimum magnitude filter (e.g. 4.5)",
         ge=0.0,
         le=10.0,
     ),
+    min_impact: Optional[float] = Query(
+        default=None,
+        description="Minimum impact score filter (0–100)",
+        ge=0.0,
+        le=100.0,
+    ),
     limit: int = Query(
-        default=50,
+        default=500,
         description="Maximum number of results to return",
         ge=1,
-        le=500,
+        le=1000,
     ),
 ):
     """
     Return a list of earthquakes from DynamoDB, newest first.
 
+    - **hours**: only include events from the last N hours
     - **min_mag**: optional lower bound on magnitude
-    - **limit**: cap on result count (default 50, max 500)
+    - **min_impact**: optional lower bound on impact score
+    - **limit**: cap on result count (default 500, max 1000)
     """
     filter_expr = None
+
+    if hours is not None:
+        cutoff_ms = int(time_module.time() * 1000) - hours * 3_600_000
+        filter_expr = Attr("timestamp").gte(cutoff_ms) | Attr("time").gte(cutoff_ms)
+
     if min_mag is not None:
-        filter_expr = Attr("magnitude").gte(Decimal(str(min_mag)))
+        mag_filter = Attr("magnitude").gte(Decimal(str(min_mag)))
+        filter_expr = filter_expr & mag_filter if filter_expr else mag_filter
+
+    if min_impact is not None:
+        impact_filter = Attr("impact_score").gte(Decimal(str(min_impact)))
+        filter_expr = filter_expr & impact_filter if filter_expr else impact_filter
 
     items = scan_table(eq_table, filter_expr)
-
-    # Sort by time descending (most recent first); handle missing time gracefully
-    items.sort(key=lambda x: x.get("time") or 0, reverse=True)
+    items.sort(key=lambda x: x.get("timestamp") or x.get("time") or 0, reverse=True)
 
     return {"count": len(items[:limit]), "earthquakes": items[:limit]}
 
@@ -147,6 +175,12 @@ def get_alerts(
         default=None,
         description="Filter by severity: HIGH or MEDIUM",
     ),
+    hours: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=720,
+        description="Only return alerts in the last N hours",
+    ),
     limit: int = Query(default=50, ge=1, le=500),
 ):
     """
@@ -156,17 +190,30 @@ def get_alerts(
     - **limit**: cap on result count
     """
     filter_expr = None
+    severity_filter = None
     if severity:
-        sev = severity.upper()
-        if sev not in ("HIGH", "MEDIUM"):
+        sev = normalize_severity(severity)
+        if sev not in ("high", "medium"):
             raise HTTPException(
                 status_code=400,
                 detail="severity must be HIGH or MEDIUM",
             )
-        filter_expr = Attr("severity").eq(sev)
+        severity_filter = Attr("severity").is_in([sev, sev.upper()])
+
+    hours_filter = None
+    if hours is not None:
+        cutoff_ms = int(time_module.time() * 1000) - hours * 3_600_000
+        hours_filter = Attr("created_at").gte(cutoff_ms) | Attr("timestamp").gte(cutoff_ms)
+
+    if severity_filter and hours_filter:
+        filter_expr = severity_filter & hours_filter
+    elif severity_filter:
+        filter_expr = severity_filter
+    elif hours_filter:
+        filter_expr = hours_filter
 
     items = scan_table(alert_table, filter_expr)
-    items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    items.sort(key=lambda x: x.get("created_at") or x.get("timestamp") or 0, reverse=True)
 
     return {"count": len(items[:limit]), "alerts": items[:limit]}
 
@@ -183,26 +230,43 @@ def get_stats():
     earthquakes = scan_table(eq_table)
     alerts = scan_table(alert_table)
 
-    total = len(earthquakes)
+    cutoff_ms = int(time_module.time() * 1000) - 24 * 3_600_000
+    earthquakes_24h = [
+        e for e in earthquakes if (e.get("timestamp") or e.get("time") or 0) >= cutoff_ms
+    ]
+    alerts_24h = [
+        a for a in alerts if (a.get("created_at") or a.get("timestamp") or 0) >= cutoff_ms
+    ]
+
+    total = len(earthquakes_24h)
     magnitudes = [
-        e["magnitude"] for e in earthquakes if e.get("magnitude") is not None
+        e["magnitude"] for e in earthquakes_24h if e.get("magnitude") is not None
     ]
 
     avg_mag = round(sum(magnitudes) / len(magnitudes), 2) if magnitudes else None
     max_mag_event = (
-        max(earthquakes, key=lambda e: e.get("magnitude") or 0)
-        if earthquakes
+        max(earthquakes_24h, key=lambda e: e.get("magnitude") or 0)
+        if earthquakes_24h
         else None
     )
 
-    high_alerts = sum(1 for a in alerts if a.get("severity") == "HIGH")
-    medium_alerts = sum(1 for a in alerts if a.get("severity") == "MEDIUM")
+    high_alerts = sum(1 for a in alerts_24h if normalize_severity(a.get("severity")) == "high")
+    medium_alerts = sum(
+        1 for a in alerts_24h if normalize_severity(a.get("severity")) == "medium"
+    )
+
+    highest_mag = max_mag_event.get("magnitude") if max_mag_event else None
+    impact_scores = [
+        e["impact_score"] for e in earthquakes_24h if e.get("impact_score") is not None
+    ]
+    highest_impact = max(impact_scores) if impact_scores else None
 
     return {
-        "total_earthquakes": total,
+        "total_events_24h": total,
         "average_magnitude": avg_mag,
-        "max_magnitude_event": max_mag_event,
-        "total_alerts": len(alerts),
+        "highest_magnitude": highest_mag,
+        "highest_impact": highest_impact,
+        "total_alerts_24h": len(alerts_24h),
         "high_alerts": high_alerts,
         "medium_alerts": medium_alerts,
     }

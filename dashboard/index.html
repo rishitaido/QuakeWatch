@@ -20,9 +20,9 @@
     <!-- ── Alert Banner (top of screen) ──────────────────── -->
     <div id="alert-banner" class="alert-banner hidden">
         <div class="alert-banner-content">
-            <span class="alert-banner-icon">⚠️</span>
+            <span class="alert-banner-icon">ALERT</span>
             <span id="alert-banner-text">Alert text here</span>
-            <button id="alert-banner-close" class="alert-banner-close" onclick="dismissBanner()">✕</button>
+            <button id="alert-banner-close" class="alert-banner-close" onclick="dismissBanner()">X</button>
         </div>
     </div>
 
@@ -38,7 +38,7 @@
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h1 class="logo">🌍 QuakeWatch</h1>
+                <h1 class="logo">QuakeWatch</h1>
                 <p class="tagline">Real-Time Earthquake Monitor</p>
             </div>
 
@@ -88,14 +88,6 @@
                 </div>
             </div>
 
-            <!-- Alert Log -->
-            <div class="alert-log-section">
-                <h3 class="section-title">Alert Log</h3>
-                <div id="alert-log" class="alert-log">
-                    <div class="alert-log-empty">No alerts yet</div>
-                </div>
-            </div>
-
             <!-- Legend -->
             <div class="legend-section">
                 <h3 class="section-title">Legend</h3>
@@ -123,6 +115,25 @@
         <main class="map-container">
             <div id="map"></div>
         </main>
+
+        <!-- Alerts Panel (right side) -->
+        <aside class="alerts-panel alert-log-section" id="alert-log-section">
+            <div class="section-title-row">
+                <h3 class="section-title">Alert Log</h3>
+                <button
+                    id="alert-log-toggle"
+                    class="section-toggle-btn"
+                    type="button"
+                    aria-expanded="true"
+                    aria-controls="alert-log"
+                >
+                    Collapse
+                </button>
+            </div>
+            <div id="alert-log" class="alert-log">
+                <div class="alert-log-empty">No alerts yet</div>
+            </div>
+        </aside>
     </div>
 
     <!-- Leaflet.js -->

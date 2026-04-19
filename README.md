@@ -1,4 +1,4 @@
-# 🌍 QuakeWatch
+# QuakeWatch
 
 A real-time earthquake monitoring platform built with Python microservices, AWS (SQS + DynamoDB), Docker, and a Leaflet.js geo dashboard.
 
