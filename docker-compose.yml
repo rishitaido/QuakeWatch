@@ -59,6 +59,7 @@ services:
       HIGH_SEVERITY_IMPACT: ${HIGH_SEVERITY_IMPACT}
       MEDIUM_SEVERITY_MAG: ${MEDIUM_SEVERITY_MAG}
       MEDIUM_SEVERITY_IMPACT: ${MEDIUM_SEVERITY_IMPACT}
+      ALERT_MAX_EVENT_AGE_HOURS: 168
 
   # ── 5. Geo Dashboard ─────────────────────────────────────────────────────
   # Nginx serves the Leaflet frontend and proxies /api → FastAPI.

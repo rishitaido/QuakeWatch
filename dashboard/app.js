@@ -99,7 +99,7 @@ async function fetchEarthquakes() {
  */
 async function fetchAlerts() {
     try {
-        const response = await fetch(`${API_BASE}/alerts?hours=24`);
+        const response = await fetch(`${API_BASE}/alerts?hours=168&limit=500`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const data = await response.json();
@@ -421,7 +421,7 @@ function updateAlertLog(alerts) {
     const log = document.getElementById("alert-log");
 
     if (!alerts || alerts.length === 0) {
-        log.innerHTML = '<div class="alert-log-empty">No alerts in the last 24 hours</div>';
+        log.innerHTML = '<div class="alert-log-empty">No alerts in the last 7 days</div>';
         return;
     }
 

@@ -203,7 +203,8 @@ def get_alerts(
     hours_filter = None
     if hours is not None:
         cutoff_ms = int(time_module.time() * 1000) - hours * 3_600_000
-        hours_filter = Attr("created_at").gte(cutoff_ms) | Attr("timestamp").gte(cutoff_ms)
+        # Alert recency is based on the earthquake event time, not alert creation time.
+        hours_filter = Attr("timestamp").gte(cutoff_ms) | Attr("time").gte(cutoff_ms)
 
     if severity_filter and hours_filter:
         filter_expr = severity_filter & hours_filter
@@ -213,7 +214,10 @@ def get_alerts(
         filter_expr = hours_filter
 
     items = scan_table(alert_table, filter_expr)
-    items.sort(key=lambda x: x.get("created_at") or x.get("timestamp") or 0, reverse=True)
+    items.sort(
+        key=lambda x: x.get("timestamp") or x.get("time") or x.get("created_at") or 0,
+        reverse=True,
+    )
 
     return {"count": len(items[:limit]), "alerts": items[:limit]}
 

@@ -23,6 +23,7 @@ ALERTS_TABLE = os.environ.get("ALERTS_TABLE", "alerts")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 POLL_INTERVAL = 30  # Check for new events every 30 seconds
+ALERT_MAX_EVENT_AGE_HOURS = int(os.environ.get("ALERT_MAX_EVENT_AGE_HOURS", "24"))
 
 # ── Logging ────────────────────────────────────────────────
 logging.basicConfig(
@@ -72,6 +73,11 @@ def scan_for_new_events() -> list[dict]:
     """
     try:
         filter_expr = Attr("severity").is_in(["high", "medium", "HIGH", "MEDIUM"])
+        if ALERT_MAX_EVENT_AGE_HOURS > 0:
+            cutoff_ms = int(time.time() * 1000) - ALERT_MAX_EVENT_AGE_HOURS * 3_600_000
+            recency_filter = Attr("timestamp").gte(cutoff_ms) | Attr("time").gte(cutoff_ms)
+            filter_expr = filter_expr & recency_filter
+
         response = earthquakes_table.scan(
             FilterExpression=filter_expr,
         )
@@ -157,6 +163,7 @@ def main():
     logger.info("=" * 60)
     logger.info("QuakeWatch Alert Evaluator starting")
     logger.info(f"Poll interval: {POLL_INTERVAL}s")
+    logger.info(f"Max earthquake age for new alerts: {ALERT_MAX_EVENT_AGE_HOURS}h")
     logger.info("=" * 60)
 
     # Load existing alerts to avoid duplicates on restart
