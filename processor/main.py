@@ -28,6 +28,7 @@ HIGH_SEVERITY_MAG = float(os.environ.get("HIGH_SEVERITY_MAG", "6.0"))
 HIGH_SEVERITY_IMPACT = float(os.environ.get("HIGH_SEVERITY_IMPACT", "80"))
 MEDIUM_SEVERITY_MAG = float(os.environ.get("MEDIUM_SEVERITY_MAG", "4.5"))
 MEDIUM_SEVERITY_IMPACT = float(os.environ.get("MEDIUM_SEVERITY_IMPACT", "40"))
+MIN_MAG_FOR_IMPACT_ALERT = float(os.environ.get("MIN_MAG_FOR_IMPACT_ALERT", "0"))
 
 IMPACT_RADIUS_KM = float(os.environ.get("IMPACT_RADIUS_KM", "300"))
 IMPACT_MAGNITUDE_EXPONENT = 2.0
@@ -249,10 +250,20 @@ def apply_place_reference_override(impact: dict, place: str) -> dict:
 def determine_severity(magnitude: float, impact_score: float) -> str:
     """
     Assign severity level based on magnitude and impact score thresholds.
+    Impact-triggered severity requires a minimum magnitude gate.
     """
-    if magnitude >= HIGH_SEVERITY_MAG or impact_score >= HIGH_SEVERITY_IMPACT:
+    impact_high = (
+        impact_score >= HIGH_SEVERITY_IMPACT
+        and magnitude >= MIN_MAG_FOR_IMPACT_ALERT
+    )
+    impact_medium = (
+        impact_score >= MEDIUM_SEVERITY_IMPACT
+        and magnitude >= MIN_MAG_FOR_IMPACT_ALERT
+    )
+
+    if magnitude >= HIGH_SEVERITY_MAG or impact_high:
         return "high"
-    elif magnitude >= MEDIUM_SEVERITY_MAG or impact_score >= MEDIUM_SEVERITY_IMPACT:
+    elif magnitude >= MEDIUM_SEVERITY_MAG or impact_medium:
         return "medium"
     else:
         return "low"
@@ -376,6 +387,7 @@ def main():
     logger.info("QuakeWatch Impact Processor starting")
     logger.info(f"SQS Queue: {SQS_QUEUE_URL}")
     logger.info(f"Impact radius: {IMPACT_RADIUS_KM} km")
+    logger.info(f"Min magnitude for impact-driven alerts: {MIN_MAG_FOR_IMPACT_ALERT}")
     logger.info(
         "Impact formula: city=(mag^%.1f)*(pop/%.0f)/(dist^%.1f+%.0f), score=min(100, %.1f*log10(1+sum))",
         IMPACT_MAGNITUDE_EXPONENT,

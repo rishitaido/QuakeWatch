@@ -166,9 +166,29 @@ aws dynamodb create-table \
 ### Seed City Data
 
 ```bash
-cd seed-data
-pip install -r requirements.txt
-python seed_cities.py
+# from repo root
+set -a && source .env && set +a
+pip install -r seed-data/requirements.txt
+python seed-data/seed_cities.py
+
+# optional tuning (examples):
+# GEONAMES_DATASET=cities15000 CITIES_MAX_COUNT=1000 python seed-data/seed_cities.py
+# GEONAMES_DATASET=cities5000 CITIES_MIN_POPULATION=10000 python seed-data/seed_cities.py
+# MIN_MAG_FOR_IMPACT_ALERT=4 controls when impact score can elevate severity
+
+# restart processor so it reloads the refreshed cities table
+docker compose restart processor
+```
+
+### Backfill Existing Earthquake Impact Scores
+
+```bash
+# dry-run first (recommended)
+set -a && source .env && set +a
+python seed-data/backfill_earthquake_impacts.py --hours 240
+
+# apply updates
+python seed-data/backfill_earthquake_impacts.py --hours 240 --apply
 ```
 
 ---

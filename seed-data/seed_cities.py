@@ -1,7 +1,8 @@
 """
 QuakeWatch - City Seed Data Script
-Downloads the GeoNames cities dataset and loads the top 1,000 cities
-by population into the DynamoDB cities table.
+Downloads a GeoNames cities dataset and loads cities into DynamoDB.
+Default behavior loads all records from `cities5000` for better regional
+coverage while keeping performance practical.
 
 Run once before starting the system:
     python seed_cities.py
@@ -25,8 +26,17 @@ from botocore.exceptions import ClientError
 # ── Configuration ──────────────────────────────────────────
 CITIES_TABLE = os.environ.get("CITIES_TABLE", "cities")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-GEONAMES_URL = "https://download.geonames.org/export/dump/cities15000.zip"
-TOP_N_CITIES = 1000
+GEONAMES_DATASET = os.environ.get("GEONAMES_DATASET", "cities5000").strip()
+GEONAMES_URL = os.environ.get(
+    "GEONAMES_URL",
+    f"https://download.geonames.org/export/dump/{GEONAMES_DATASET}.zip",
+)
+GEONAMES_TXT_FILENAME = os.environ.get(
+    "GEONAMES_TXT_FILENAME",
+    f"{GEONAMES_DATASET}.txt",
+)
+CITIES_MAX_COUNT = int(os.environ.get("CITIES_MAX_COUNT", "0"))
+CITIES_MIN_POPULATION = int(os.environ.get("CITIES_MIN_POPULATION", "0"))
 
 # ── Logging ────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,8 +62,8 @@ COL_POPULATION = 14
 
 def download_and_parse_cities() -> list[dict]:
     """
-    Download the GeoNames cities15000 dataset and extract the top N cities
-    by population.
+    Download the selected GeoNames dataset and parse cities.
+    If CITIES_MAX_COUNT is > 0, keep only the top N by population.
     """
     logger.info(f"Downloading GeoNames dataset from {GEONAMES_URL}...")
     response = requests.get(GEONAMES_URL, timeout=60)
@@ -61,17 +71,14 @@ def download_and_parse_cities() -> list[dict]:
 
     logger.info("Extracting ZIP file...")
     z = zipfile.ZipFile(io.BytesIO(response.content))
-
-    # The ZIP contains cities15000.txt
-    txt_filename = "cities15000.txt"
     cities = []
 
-    with z.open(txt_filename) as f:
+    with z.open(GEONAMES_TXT_FILENAME) as f:
         reader = csv.reader(io.TextIOWrapper(f, encoding="utf-8"), delimiter="\t")
         for row in reader:
             try:
                 population = int(row[COL_POPULATION])
-                if population <= 0:
+                if population <= 0 or population < CITIES_MIN_POPULATION:
                     continue
 
                 cities.append({
@@ -85,23 +92,37 @@ def download_and_parse_cities() -> list[dict]:
             except (ValueError, IndexError):
                 continue
 
-    # Sort by population descending and take top N
+    # Sort by population descending
     cities.sort(key=lambda c: c["population"], reverse=True)
-    top_cities = cities[:TOP_N_CITIES]
+    if CITIES_MAX_COUNT > 0:
+        selected_cities = cities[:CITIES_MAX_COUNT]
+    else:
+        selected_cities = cities
 
     logger.info(
-        f"Parsed {len(cities)} cities total, selected top {len(top_cities)} by population"
+        "Parsed %s cities total, selected %s (dataset=%s, max_count=%s, min_population=%s)",
+        len(cities),
+        len(selected_cities),
+        GEONAMES_DATASET,
+        CITIES_MAX_COUNT if CITIES_MAX_COUNT > 0 else "ALL",
+        CITIES_MIN_POPULATION,
     )
-    logger.info(
-        f"Largest: {top_cities[0]['name']} ({top_cities[0]['population']:,}), "
-        f"Smallest in set: {top_cities[-1]['name']} ({top_cities[-1]['population']:,})"
-    )
+    if selected_cities:
+        logger.info(
+            "Largest: %s (%s), Smallest in set: %s (%s)",
+            selected_cities[0]["name"],
+            f"{selected_cities[0]['population']:,}",
+            selected_cities[-1]["name"],
+            f"{selected_cities[-1]['population']:,}",
+        )
 
-    return top_cities
+    return selected_cities
 
 
 def save_cities_json(cities: list[dict], filepath: str = "cities.json"):
     """Save cities to a JSON file for reference / debugging."""
+    if filepath == "cities.json":
+        filepath = os.path.join(os.path.dirname(__file__), "cities.json")
     with open(filepath, "w") as f:
         json.dump(cities, f, indent=2)
     logger.info(f"Saved {len(cities)} cities to {filepath}")
@@ -139,6 +160,12 @@ def upload_to_dynamodb(cities: list[dict]):
 def main():
     logger.info("=" * 60)
     logger.info("QuakeWatch City Seed Script")
+    logger.info(
+        "Config: dataset=%s, max_count=%s, min_population=%s",
+        GEONAMES_DATASET,
+        CITIES_MAX_COUNT if CITIES_MAX_COUNT > 0 else "ALL",
+        CITIES_MIN_POPULATION,
+    )
     logger.info("=" * 60)
 
     # Step 1: Download and parse
