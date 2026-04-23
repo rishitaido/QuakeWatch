@@ -6,30 +6,15 @@ A real-time earthquake monitoring platform built with Python microservices, AWS 
 
 ## Architecture
 
-```
-USGS GeoJSON Feed
-       │
-       ▼
-┌─────────────┐      SQS Queue      ┌──────────────┐
-│  Ingester   │ ──────────────────► │  Processor   │
-│  (Python)   │                     │  (Python)    │
-└─────────────┘                     └──────┬───────┘
-                                           │ writes impact scores
-                                           ▼
-                                    ┌─────────────────┐
-                                    │   DynamoDB       │
-                                    │  earthquakes     │
-                                    │  alerts          │
-                                    │  cities          │
-                                    └──────┬──────────┘
-                                           │
-                          ┌────────────────┼────────────────┐
-                          ▼                ▼                ▼
-                  ┌──────────────┐  ┌──────────────┐  ┌──────────┐
-                  │Alert Evaluator│  │   REST API   │  │Dashboard │
-                  │  (Python)    │  │  (FastAPI)   │  │ (Nginx + │
-                  └──────────────┘  └──────────────┘  │ Leaflet) │
-                                                       └──────────┘
+```text
+USGS GeoJSON feed
+  -> ingester (Python)
+  -> SQS queue
+  -> processor (Python)
+  -> DynamoDB tables: earthquakes, alerts, cities
+
+The API reads from DynamoDB and serves JSON to the dashboard.
+The alert-evaluator reads from DynamoDB and writes alert records.
 ```
 
 ---
@@ -39,7 +24,7 @@ USGS GeoJSON Feed
 | Service | Owner | Description |
 |---------|-------|-------------|
 | `ingester` | Rishi | Polls USGS every 60 s, deduplicates by event ID, publishes to SQS |
-| `api` | Rishi | FastAPI — serves `/earthquakes`, `/alerts`, `/stats` |
+| `api` | Rishi | FastAPI - serves `/earthquakes`, `/alerts`, `/stats` |
 | `processor` | Asha | Consumes SQS messages, calculates Haversine impact scores, writes to DynamoDB |
 | `alert-evaluator` | Asha | Monitors earthquakes table, creates alert records for high/medium severity events |
 | `dashboard` | Hania | Nginx-served Leaflet map with real-time markers, sidebar, and filters |
@@ -48,8 +33,8 @@ USGS GeoJSON Feed
 
 ## Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- [AWS CLI](https://aws.amazon.com/cli/) configured, or fill in `.env` manually
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Compose v2)
+- [AWS CLI](https://aws.amazon.com/cli/) configured (or equivalent AWS credentials available to the containers)
 - An AWS account with:
   - An SQS queue named `quakewatch-queue`
   - Three DynamoDB tables: `earthquakes`, `alerts`, `cities`
@@ -65,20 +50,62 @@ git clone https://github.com/rishitaido/quakewatch.git
 cd quakewatch
 ```
 
-### 2. Configure environment variables
+### 2. Create `.env`
 
 ```bash
-cp .env.example .env
-# Edit .env and fill in your AWS credentials and resource names
+cat > .env << 'EOF'
+AWS_ACCESS_KEY_ID=your_access_key_id
+AWS_SECRET_ACCESS_KEY=your_secret_access_key
+AWS_REGION=us-east-1
+
+SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<account-id>/quakewatch-queue
+EARTHQUAKES_TABLE=earthquakes
+ALERTS_TABLE=alerts
+CITIES_TABLE=cities
+
+USGS_FEED_URL=https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson
+POLL_INTERVAL_SECONDS=60
+API_PORT=8000
+
+HIGH_SEVERITY_MAG=6.0
+HIGH_SEVERITY_IMPACT=80
+MEDIUM_SEVERITY_MAG=4.5
+MEDIUM_SEVERITY_IMPACT=40
+MIN_MAG_FOR_IMPACT_ALERT=0
+IMPACT_RADIUS_KM=300
+EOF
 ```
 
-### 3. Build and run all services
+If you already created the queue, you can fetch `SQS_QUEUE_URL` with:
 
 ```bash
-docker compose up --build
+aws sqs get-queue-url \
+  --queue-name quakewatch-queue \
+  --region us-east-1 \
+  --query QueueUrl \
+  --output text
 ```
 
-### 4. Access the dashboard
+### 3. Build images
+
+```bash
+docker compose build
+```
+
+### 4. Start the stack
+
+```bash
+docker compose up -d
+```
+
+### 5. Verify services
+
+```bash
+docker compose ps
+curl -fsS http://localhost:8000/health
+```
+
+### 6. Access the dashboard
 
 Open [http://localhost](http://localhost) in your browser.
 
@@ -113,7 +140,7 @@ The REST API is available at [http://localhost:8000](http://localhost:8000).
 | Attribute | Type | Notes |
 |-----------|------|-------|
 | `alert_id` | String | Partition key (UUID) |
-| `event_id` | String | FK → earthquakes |
+| `event_id` | String | FK -> earthquakes |
 | `severity` | String | `HIGH` or `MEDIUM` |
 | `created_at` | String | ISO 8601 timestamp |
 
